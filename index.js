@@ -1,9 +1,10 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { randomUUID } from 'node:crypto';
 import fetch from 'node-fetch';
 import { createServer } from 'http';
 
@@ -31,7 +32,7 @@ async function triliumRequest(method, path, body = null) {
 
 function createMCPServer() {
   const server = new Server(
-    { name: 'trilium-mcp', version: '1.0.0' },
+    { name: 'trilium-mcp', version: '2.0.0' },
     { capabilities: { tools: {} } }
   );
 
@@ -166,44 +167,97 @@ function createMCPServer() {
   return server;
 }
 
-// HTTP server con SSE
+// HTTP server con Streamable HTTP transport
 const transports = {};
 
 const httpServer = createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('Access-Control-Expose-Headers', 'mcp-session-id');
 
   if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
 
+  // Health check
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', service: 'trilium-mcp' }));
+    res.end(JSON.stringify({ status: 'ok', service: 'trilium-mcp', version: '2.0.0', transport: 'streamable-http' }));
     return;
   }
 
-  if (req.method === 'GET' && req.url === '/sse') {
-    const transport = new SSEServerTransport('/messages', res);
-    const server = createMCPServer();
-    transports[transport.sessionId] = transport;
-    res.on('close', () => delete transports[transport.sessionId]);
-    await server.connect(transport);
-    return;
-  }
+  // Endpoint principal de MCP - acepta POST (mensajes), GET (stream notificaciones) y DELETE (cerrar sesión)
+  if (req.url === '/mcp' || req.url.startsWith('/mcp?')) {
+    const sessionId = req.headers['mcp-session-id'];
+    let transport;
 
-  if (req.method === 'POST' && req.url === '/messages') {
-    const sessionId = new URL(req.url, `http://localhost`).searchParams.get('sessionId');
-    const transport = transports[sessionId];
-    if (!transport) { res.writeHead(404); res.end('Session not found'); return; }
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
-      try {
-        await transport.handlePostMessage(req, res, JSON.parse(body));
-      } catch (e) {
-        res.writeHead(500); res.end(e.message);
+    try {
+      if (sessionId && transports[sessionId]) {
+        // Sesión existente
+        transport = transports[sessionId];
+      } else if (!sessionId && req.method === 'POST') {
+        // Nueva sesión - leer el body para ver si es un initialize
+        let body = '';
+        for await (const chunk of req) body += chunk;
+        const parsedBody = JSON.parse(body);
+
+        // Solo crear nueva sesión si es un request de initialize
+        if (parsedBody.method === 'initialize') {
+          transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            onsessioninitialized: (sid) => {
+              transports[sid] = transport;
+            },
+          });
+
+          transport.onclose = () => {
+            if (transport.sessionId) {
+              delete transports[transport.sessionId];
+            }
+          };
+
+          const server = createMCPServer();
+          await server.connect(transport);
+          await transport.handleRequest(req, res, parsedBody);
+          return;
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
+            id: null,
+          }));
+          return;
+        }
+      } else {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          error: { code: -32000, message: 'Bad Request: Invalid session' },
+          id: null,
+        }));
+        return;
       }
-    });
+
+      // Para POST con sesión existente, leer body
+      if (req.method === 'POST') {
+        let body = '';
+        for await (const chunk of req) body += chunk;
+        await transport.handleRequest(req, res, JSON.parse(body));
+      } else {
+        // GET o DELETE
+        await transport.handleRequest(req, res);
+      }
+    } catch (e) {
+      console.error('Error manejando request MCP:', e);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: `Internal error: ${e.message}` },
+          id: null,
+        }));
+      }
+    }
     return;
   }
 
@@ -211,7 +265,8 @@ const httpServer = createServer(async (req, res) => {
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`Trilium MCP server corriendo en puerto ${PORT}`);
+  console.log(`Trilium MCP server v2.0 corriendo en puerto ${PORT}`);
   console.log(`Trilium URL: ${TRILIUM_URL}`);
-  console.log(`SSE endpoint: http://localhost:${PORT}/sse`);
+  console.log(`MCP endpoint: http://localhost:${PORT}/mcp`);
+  console.log(`Health endpoint: http://localhost:${PORT}/health`);
 });
