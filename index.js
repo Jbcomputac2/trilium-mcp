@@ -374,18 +374,28 @@ async function handleCall(name, args) {
 
     // --- TANDA 1: MOVE / CLONE / EXPORT ---
     case 'move_note': {
-      // En Trilium, mover = actualizar la branch principal a otro parentNoteId.
-      // Primero obtenemos la nota para sacar su branchId principal.
+      // La ETAPI no permite cambiar parentNoteId de una branch existente.
+      // Solución: crear branch nueva en el destino, borrar la vieja.
       const note = await triliumRequest('GET', `/notes/${args.noteId}`);
       if (!note.parentBranchIds?.length) {
         throw new Error('La nota no tiene branches (¿es la raíz?)');
       }
-      // Tomamos la primera branch (la principal)
-      const branchId = note.parentBranchIds[0];
-      await triliumRequest('PATCH', `/branches/${branchId}`, {
+      // Tomamos la primera branch como "la principal" a mover
+      const oldBranchId = note.parentBranchIds[0];
+      const oldBranch = await triliumRequest('GET', `/branches/${oldBranchId}`);
+
+      // 1) Crear nueva branch en el destino
+      const newBranch = await triliumRequest('POST', '/branches', {
+        noteId: args.noteId,
         parentNoteId: args.newParentNoteId,
+        prefix: oldBranch.prefix || '',
+        isExpanded: oldBranch.isExpanded || false,
       });
-      return ok(`Nota ${args.noteId} movida bajo ${args.newParentNoteId}`);
+
+      // 2) Borrar la branch vieja (no borra la nota porque sigue clonada en la nueva)
+      await triliumRequest('DELETE', `/branches/${oldBranchId}`);
+
+      return ok(`Nota ${args.noteId} movida de ${oldBranch.parentNoteId} a ${args.newParentNoteId}\nNueva branch: ${newBranch.branchId}`);
     }
     case 'clone_note': {
       // Clonar = crear una branch nueva apuntando a la misma nota desde otro padre
@@ -481,7 +491,7 @@ async function handleCall(name, args) {
 // ============================================================================
 function createMCPServer() {
   const server = new Server(
-    { name: 'trilium-mcp', version: '3.0.0' },
+    { name: 'trilium-mcp', version: '3.0.1' },
     { capabilities: { tools: {} } }
   );
 
@@ -517,7 +527,7 @@ const httpServer = createServer(async (req, res) => {
     res.end(JSON.stringify({
       status: 'ok',
       service: 'trilium-mcp',
-      version: '3.0.0',
+      version: '3.0.1',
       transport: 'streamable-http',
       tools: TOOLS.length,
     }));
@@ -594,7 +604,7 @@ const httpServer = createServer(async (req, res) => {
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`Trilium MCP server v3.0 corriendo en puerto ${PORT}`);
+  console.log(`Trilium MCP server v3.0.1 corriendo en puerto ${PORT}`);
   console.log(`Trilium URL: ${TRILIUM_URL}`);
   console.log(`Tools registradas: ${TOOLS.length}`);
   console.log(`MCP endpoint: http://localhost:${PORT}/mcp`);
