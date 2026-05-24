@@ -24,7 +24,11 @@ async function triliumRequest(method, path, body = null, opts = {}) {
   const headers = { ...authHeader };
 
   if (isStringBody) {
-    headers['Content-Type'] = 'text/html';
+    // FIX: Trilium ETAPI tiene un bug con Content-Type: text/html en PUT /notes/{id}/content
+    // que devuelve "Cannot set null content" y corrompe la nota a [object Object].
+    // Usar text/plain — el body sigue siendo HTML crudo, Trilium guarda los bytes igual.
+    // Referencia: https://github.com/io7/trilium-cli
+    headers['Content-Type'] = 'text/plain';
   } else if (body !== null && body !== undefined) {
     headers['Content-Type'] = 'application/json';
   }
@@ -517,7 +521,7 @@ async function handleCall(name, args) {
 // ============================================================================
 function createMCPServer() {
   const server = new Server(
-    { name: 'trilium-mcp', version: '3.0.2' },
+    { name: 'trilium-mcp', version: '3.0.3' },
     { capabilities: { tools: {} } }
   );
 
@@ -553,7 +557,7 @@ const httpServer = createServer(async (req, res) => {
     res.end(JSON.stringify({
       status: 'ok',
       service: 'trilium-mcp',
-      version: '3.0.2',
+      version: '3.0.3',
       transport: 'streamable-http',
       tools: TOOLS.length,
     }));
@@ -630,7 +634,7 @@ const httpServer = createServer(async (req, res) => {
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`Trilium MCP server v3.0.2 corriendo en puerto ${PORT}`);
+  console.log(`Trilium MCP server v3.0.3 corriendo en puerto ${PORT}`);
   console.log(`Trilium URL: ${TRILIUM_URL}`);
   console.log(`Tools registradas: ${TOOLS.length}`);
   console.log(`MCP endpoint: http://localhost:${PORT}/mcp`);
