@@ -361,10 +361,36 @@ async function handleCall(name, args) {
       return ok(`Nota creada con ID: ${result.note.noteId}\nTítulo: ${result.note.title}`);
     }
     case 'update_note': {
+      // ============ DEBUG LOGS ============
+      console.log('[update_note] args recibidos:', JSON.stringify(args, null, 2));
+      console.log('[update_note] typeof args.content:', typeof args.content);
+      console.log('[update_note] args.content length:', args.content?.length);
+      console.log('[update_note] args.content preview:', String(args.content || '').substring(0, 100));
+      // ====================================
+
+      if (args.content === undefined || args.content === null) {
+        throw new Error(
+          `Content es null/undefined. Args recibidos: ${JSON.stringify(Object.keys(args || {}))}`
+        );
+      }
+
       if (args.title) {
         await triliumRequest('PATCH', `/notes/${args.noteId}`, { title: args.title });
       }
-      await triliumRequest('PUT', `/notes/${args.noteId}/content`, args.content);
+
+      // Forzar a string por si llega como objeto, número, o cualquier otra cosa
+      let contentStr = typeof args.content === 'string'
+        ? args.content
+        : String(args.content);
+
+      // Si está vacío, mandar al menos un párrafo vacío (Trilium ETAPI necesita body no vacío)
+      if (contentStr.length === 0) {
+        contentStr = '<p></p>';
+      }
+
+      console.log('[update_note] contentStr final length:', contentStr.length);
+
+      await triliumRequest('PUT', `/notes/${args.noteId}/content`, contentStr);
       return ok(`Nota ${args.noteId} actualizada correctamente`);
     }
     case 'delete_note': {
@@ -491,7 +517,7 @@ async function handleCall(name, args) {
 // ============================================================================
 function createMCPServer() {
   const server = new Server(
-    { name: 'trilium-mcp', version: '3.0.1' },
+    { name: 'trilium-mcp', version: '3.0.2' },
     { capabilities: { tools: {} } }
   );
 
@@ -527,7 +553,7 @@ const httpServer = createServer(async (req, res) => {
     res.end(JSON.stringify({
       status: 'ok',
       service: 'trilium-mcp',
-      version: '3.0.1',
+      version: '3.0.2',
       transport: 'streamable-http',
       tools: TOOLS.length,
     }));
@@ -604,7 +630,7 @@ const httpServer = createServer(async (req, res) => {
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`Trilium MCP server v3.0.1 corriendo en puerto ${PORT}`);
+  console.log(`Trilium MCP server v3.0.2 corriendo en puerto ${PORT}`);
   console.log(`Trilium URL: ${TRILIUM_URL}`);
   console.log(`Tools registradas: ${TOOLS.length}`);
   console.log(`MCP endpoint: http://localhost:${PORT}/mcp`);
